@@ -1,189 +1,207 @@
+// lib/screens/home_screen.dart
+import 'dart:async';
+import 'package:aura/widgets/sos_button.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'contacts_screen.dart';
+import 'safezone_screen.dart';
+import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
   @override
-  _HomeScreenState createState() => _HomeScreenState();
+  State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int safetyScore = 85; // Example, dynamic from backend later
-  bool hasNetwork = true;
-  LatLng lastLocation = LatLng(19.0760, 72.8777); // Mumbai example
-  GoogleMapController? mapController;
+  Position? _position;
+  String _networkStatus = 'Unknown';
+  Timer? _heartbeatTimer;
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  double _riskScore = 0.0;
 
-  void _onMapCreated(GoogleMapController controller) {
-    mapController = controller;
+  @override
+  void initState() {
+    super.initState();
+    _initLocation();
+    _initConnectivity();
+    _startHeartbeat();
   }
 
-  void sendPanicAlert() {
-    // Call your backend or cloud function to trigger alert
-    print("Panic Alert Triggered!");
-    // TODO: integrate Twilio/Email API
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text("Alert Sent"),
-        content: Text("Your emergency contacts have been notified."),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context), child: Text("OK"))
-        ],
-      ),
-    );
+  @override
+  void dispose() {
+    _heartbeatTimer?.cancel();
+    super.dispose();
   }
 
-  Widget _buildSafetyCard() {
-    return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      elevation: 6,
-      margin: EdgeInsets.all(16),
-      child: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          children: [
-            Text(
-              "Safety Score",
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            SizedBox(height: 10),
-            Text(
-              "$safetyScore / 100",
-              style: TextStyle(
-                  fontSize: 36,
-                  fontWeight: FontWeight.bold,
-                  color: safetyScore > 70 ? Colors.green : Colors.red),
-            ),
-            SizedBox(height: 10),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  hasNetwork ? Icons.wifi : Icons.wifi_off,
-                  color: hasNetwork ? Colors.green : Colors.red,
-                ),
-                SizedBox(width: 8),
-                Text(hasNetwork ? "Connected" : "No Network",
-                    style: TextStyle(fontSize: 16))
-              ],
-            )
-          ],
-        ),
-      ),
-    );
+  Future<void> _initLocation() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) return;
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) return;
+    }
+
+    Position pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.best);
+    setState(() => _position = pos);
+    _updateHeartbeat(); // initial ping
   }
 
-  Widget _buildPanicButton() {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: ElevatedButton.icon(
-        onPressed: sendPanicAlert,
-        icon: Icon(Icons.warning, size: 30,
-          color: Colors.white,),
-        label: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12.0, horizontal: 20),
-          child: Text(
-            "Panic Button",
-            style: TextStyle(fontSize: 22,
-              color: Colors.white,),
-
-          ),
-        ),
-        style: ElevatedButton.styleFrom(
-          backgroundColor: Color(0xFF9E3581),
-          shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          elevation: 8,
-        ),
-      ),
-    );
+  void _initConnectivity() {
+    Connectivity().onConnectivityChanged.listen((status) {
+      setState(() {
+        _networkStatus = (status == ConnectivityResult.none) ? 'Offline' : 'Online';
+      });
+    });
+    // initial check
+    Connectivity().checkConnectivity().then((status) {
+      setState(() {
+        _networkStatus = (status == ConnectivityResult.none) ? 'Offline' : 'Online';
+      });
+    });
   }
 
-  Widget _buildMap() {
-    return Container(
-      height: 250,
-      margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 6)]),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(20),
-        child: GoogleMap(
-          onMapCreated: _onMapCreated,
-          initialCameraPosition:
-          CameraPosition(target: lastLocation, zoom: 14.0),
-          markers: {
-            Marker(
-              markerId: MarkerId("user_location"),
-              position: lastLocation,
-              infoWindow: InfoWindow(title: "You are here"),
-            ),
-          },
-        ),
-      ),
-    );
+  void _startHeartbeat() {
+    // send heartbeat every 60 seconds to Firestore
+    _heartbeatTimer = Timer.periodic(Duration(seconds: 60), (_) => _updateHeartbeat());
   }
 
-  Widget _buildQuickContacts() {
-    // Dummy contacts
-    List<String> contacts = ["Mom", "Friend", "Police"];
-    return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      elevation: 6,
-      margin: EdgeInsets.all(16),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            Text(
-              "Emergency Contacts",
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            SizedBox(height: 10),
-            Wrap(
-              spacing: 16,
-              children: contacts
-                  .map((c) => Chip(
-                label: Text(c),
-                avatar: Icon(Icons.person),
-              ))
-                  .toList(),
-            )
-          ],
-        ),
-      ),
+  Future<void> _updateHeartbeat() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+    Position? pos;
+    try {
+      pos = await Geolocator.getLastKnownPosition() ?? _position;
+    } catch (_) {
+      pos = _position;
+    }
+
+    // compute local risk score (placeholder - replace with probability_service logic)
+    double score = _computeRiskScore(pos, _networkStatus);
+    setState(() => _riskScore = score);
+
+    await _firestore.collection('users').doc(user.uid).set({
+      'lastSeen': FieldValue.serverTimestamp(),
+      'location': pos != null ? GeoPoint(pos.latitude, pos.longitude) : null,
+      'network': _networkStatus,
+      'riskScore': _riskScore,
+    }, SetOptions(merge: true));
+  }
+
+  double _computeRiskScore(Position? pos, String network) {
+    // simple heuristic: night + offline increases score; replace with your formula
+    double score = 0.0;
+    if (network == 'Offline') score += 0.5;
+    final hour = DateTime.now().hour;
+    if (hour >= 22 || hour <= 5) score += 0.3;
+    if (pos == null) score += 0.1;
+    return (score).clamp(0.0, 1.0);
+  }
+
+  Future<void> _triggerEmergency({required bool urgent}) async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+    Position? pos;
+    try {
+      pos = await Geolocator.getCurrentPosition();
+    } catch (_) {}
+
+    final doc = {
+      'uid': user.uid,
+      'name': user.displayName ?? user.email,
+      'timestamp': FieldValue.serverTimestamp(),
+      'urgent': urgent,
+      'location': pos != null ? GeoPoint(pos.latitude, pos.longitude) : null,
+      'network': _networkStatus,
+      'riskScore': _riskScore,
+      'handled': false,
+    };
+
+    // write to emergency_requests collection; cloud function will handle alerts
+    await _firestore.collection('emergency_requests').add(doc);
+
+    // show confirmation
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(urgent ? 'Emergency sent!' : 'Alert sent (non-urgent)')),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final lat = _position?.latitude?.toStringAsFixed(5) ?? '—';
+    final lng = _position?.longitude?.toStringAsFixed(5) ?? '—';
+    final user = _auth.currentUser;
+
     return Scaffold(
       appBar: AppBar(
-        title: Text("AURA",
-          style: TextStyle(
-          color: Colors.white, // Set the title text color to white
-          fontWeight: FontWeight.bold,
-          fontSize: 20,
-        ),
+        title: Text('AURA — Home'),
+        actions: [
+          IconButton(
+            icon: Icon(Icons.settings),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen())),
+          )
+        ],
       ),
-
-        centerTitle: true,
-        backgroundColor: Color(0xFF9E3581),
-        iconTheme: const IconThemeData(
-          color: Colors.white, // Back arrow and other icons color
-        ),
-      ),
-      body: SingleChildScrollView(
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            _buildSafetyCard(),
-            _buildMap(),
-            _buildPanicButton(),
-            _buildQuickContacts(),
+            Card(
+              child: ListTile(
+                leading: Icon(Icons.my_location),
+                title: Text('Location: $lat, $lng'),
+                subtitle: Text('Network: $_networkStatus    Risk: ${(_riskScore * 100).toInt()}%'),
+                trailing: ElevatedButton(
+                  onPressed: _updateHeartbeat,
+                  child: Text('Ping'),
+                ),
+              ),
+            ),
+            SizedBox(height: 18),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  SOSButton(
+                    onTapSOS: () => _triggerEmergency(urgent: false),
+                    onLongPressSOS: () => _triggerEmergency(urgent: true),
+                  ),
+                  SizedBox(height: 16),
+                  Text(
+                    'Press SOS for quick alert\nLong press for emergency',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 14, color: Colors.grey[700]),
+                  ),
+                ],
+              ),
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                ElevatedButton.icon(
+                  icon: Icon(Icons.contacts),
+                  label: Text('Contacts'),
+                  onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ContactsScreen())),
+                ),
+                ElevatedButton.icon(
+                  icon: Icon(Icons.map),
+                  label: Text('Safe Zones'),
+                  onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => SafezoneScreen())),
+                ),
+              ],
+            ),
+            SizedBox(height: 8),
+            if (user != null) Text('Signed in as: ${user.email}', style: TextStyle(fontSize: 12)),
           ],
         ),
       ),
     );
   }
 }
-
